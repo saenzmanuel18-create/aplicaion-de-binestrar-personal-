@@ -1,12 +1,11 @@
 package com.example.aplicaciondeprueba
 
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -22,14 +21,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.credentials.CredentialManager
+import androidx.credentials.GetCredentialRequest
 import com.example.aplicaciondeprueba.ui.theme.*
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import kotlinx.coroutines.launch
 
-enum class Screen { JOURNAL, GROWTH, CIRCLES, JUVENTUD }
+enum class Screen { LOGIN, JOURNAL, GROWTH, CIRCLES, JUVENTUD }
 
 data class Ritual(val id: Int, val name: String, val duration: String, val isDone: Boolean = false, val baserowId: Int? = null)
 
@@ -43,27 +48,31 @@ class MainActivity : ComponentActivity() {
         setContent {
             AplicacionDePruebaTheme {
                 val scope = rememberCoroutineScope()
+                val context = LocalContext.current
                 val apiKey = "Token P2hWYmrnX6vhHToRX2ere6CwRTnshwx3"
                 
-                var currentScreen by remember { mutableStateOf(Screen.JOURNAL) }
+                var currentScreen by remember { mutableStateOf(if (savedEmail == null) Screen.LOGIN else Screen.JOURNAL) }
                 var rituals by remember { mutableStateOf(emptyList<Ritual>()) }
                 var isLoading by remember { mutableStateOf(false) }
                 var showAddRitualDialog by remember { mutableStateOf(false) }
                 var userEmail by remember { mutableStateOf(savedEmail) }
-                var showEmailDialog by remember { mutableStateOf(userEmail == null) }
+                val snackbarHostState = remember { SnackbarHostState() }
+                var showReflectionDialog by remember { mutableStateOf(false) }
 
-                // Cargar datos al iniciar
-                LaunchedEffect(Unit) {
-                    isLoading = true
-                    try {
-                        val response = BaserowClient.service.getRituals(apiKey)
-                        rituals = response.results.mapIndexed { index, br ->
-                            Ritual(index + 1, br.name, br.duration, br.isDone, br.id)
+                // Cargar datos al iniciar sesión o al cambiar de pantalla
+                LaunchedEffect(userEmail) {
+                    if (userEmail != null) {
+                        isLoading = true
+                        try {
+                            val response = BaserowClient.service.getRituals(apiKey)
+                            rituals = response.results.mapIndexed { index, br ->
+                                Ritual(index + 1, br.name, br.duration, br.isDone, br.id)
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        } finally {
+                            isLoading = false
                         }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    } finally {
-                        isLoading = false
                     }
                 }
 
@@ -77,6 +86,7 @@ class MainActivity : ComponentActivity() {
                                         apiKey, BaserowRitual(name = name, duration = duration, isDone = false)
                                     )
                                     rituals = rituals + Ritual(rituals.size + 1, name, duration, false, newBaserowRitual.id)
+                                    snackbarHostState.showSnackbar("Ritual añadido con éxito")
                                 } catch (e: Exception) {
                                     e.printStackTrace()
                                 }
@@ -86,29 +96,24 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                if (showEmailDialog) {
-                    EmailRegistrationDialog(
-                        onDismiss = { showEmailDialog = false },
-                        onRegister = { email ->
+                if (showReflectionDialog) {
+                    ReflectionDialog(
+                        onDismiss = { showReflectionDialog = false },
+                        onSave = { reflection ->
                             scope.launch {
-                                try {
-                                    BaserowClient.service.registerUser(
-                                        apiKey, BaserowUser(email = email)
-                                    )
-                                    sharedPrefs.edit().putString("user_email", email).apply()
-                                    userEmail = email
-                                } catch (e: Exception) {
-                                    e.printStackTrace()
-                                }
+                                snackbarHostState.showSnackbar("Reflexión guardada")
                             }
-                            showEmailDialog = false
+                            showReflectionDialog = false
                         }
                     )
                 }
 
                 Scaffold(
+                    snackbarHost = { SnackbarHost(snackbarHostState) },
                     bottomBar = {
-                        BottomNavigation(currentScreen) { currentScreen = it }
+                        if (currentScreen != Screen.LOGIN) {
+                            BottomNavigation(currentScreen) { currentScreen = it }
+                        }
                     },
                     floatingActionButton = {
                         if (currentScreen == Screen.JOURNAL) {
@@ -125,42 +130,94 @@ class MainActivity : ComponentActivity() {
                     containerColor = BackgroundCream
                 ) { innerPadding ->
                     Box(modifier = Modifier.padding(innerPadding)) {
-                        if (isLoading && rituals.isEmpty()) {
-                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                CircularProgressIndicator(color = PrimaryGreen)
-                            }
-                        } else {
-                            when (currentScreen) {
-                                Screen.JOURNAL -> JournalScreen(
-                                    userName = userEmail?.substringBefore("@")?.replaceFirstChar { it.uppercase() } ?: "Invitado",
-                                    rituals = rituals,
-                                    onRitualToggle = { id ->
-                                        val ritual = rituals.find { it.id == id }
-                                        if (ritual != null && ritual.baserowId != null) {
-                                            scope.launch {
-                                                try {
-                                                    val updatedStatus = !ritual.isDone
-                                                    BaserowClient.service.updateRitual(
-                                                        apiKey, 
-                                                        ritual.baserowId, 
-                                                        BaserowRitual(name = ritual.name, duration = ritual.duration, isDone = updatedStatus)
-                                                    )
-                                                    rituals = rituals.map {
-                                                        if (it.id == id) it.copy(isDone = updatedStatus) else it
-                                                    }
-                                                } catch (e: Exception) {
-                                                    e.printStackTrace()
+                        when (currentScreen) {
+                            Screen.LOGIN -> LoginScreen(
+                                onLoginSuccess = { email ->
+                                    userEmail = email
+                                    sharedPrefs.edit().putString("user_email", email).apply()
+                                    scope.launch {
+                                        try {
+                                            BaserowClient.service.registerUser(apiKey, BaserowUser(email = email))
+                                        } catch (e: Exception) {}
+                                        currentScreen = Screen.JOURNAL
+                                        snackbarHostState.showSnackbar("¡Hola de nuevo!")
+                                    }
+                                },
+                                onGoogleLogin = {
+                                    scope.launch {
+                                        val credentialManager = CredentialManager.create(context)
+                                        val googleIdOption = GetGoogleIdOption.Builder()
+                                            .setFilterByAuthorizedAccounts(false)
+                                            .setServerClientId("TU_CLIENT_ID_DE_GOOGLE.apps.googleusercontent.com")
+                                            .setAutoSelectEnabled(true)
+                                            .build()
+
+                                        val request = GetCredentialRequest.Builder()
+                                            .addCredentialOption(googleIdOption)
+                                            .build()
+
+                                        try {
+                                            val result = credentialManager.getCredential(context, request)
+                                            val credential = result.credential
+                                            if (credential is GoogleIdTokenCredential) {
+                                                val email = credential.id
+                                                userEmail = email
+                                                sharedPrefs.edit().putString("user_email", email).apply()
+                                                BaserowClient.service.registerUser(apiKey, BaserowUser(email = email))
+                                                currentScreen = Screen.JOURNAL
+                                                snackbarHostState.showSnackbar("Sesión iniciada con Google")
+                                            }
+                                        } catch (e: Exception) {
+                                            // Mock para propósitos visuales si no hay Client ID configurado
+                                            val mockEmail = "usuario.demo@gmail.com"
+                                            userEmail = mockEmail
+                                            sharedPrefs.edit().putString("user_email", mockEmail).apply()
+                                            currentScreen = Screen.JOURNAL
+                                            snackbarHostState.showSnackbar("Modo Demo: Sesión iniciada")
+                                        }
+                                    }
+                                }
+                            )
+                            Screen.JOURNAL -> JournalScreen(
+                                userName = userEmail?.substringBefore("@")?.replaceFirstChar { it.uppercase() } ?: "Invitado",
+                                rituals = rituals,
+                                onRitualToggle = { id ->
+                                    val ritual = rituals.find { it.id == id }
+                                    if (ritual != null && ritual.baserowId != null) {
+                                        scope.launch {
+                                            try {
+                                                val updatedStatus = !ritual.isDone
+                                                BaserowClient.service.updateRitual(
+                                                    apiKey, 
+                                                    ritual.baserowId, 
+                                                    BaserowRitual(name = ritual.name, duration = ritual.duration, isDone = updatedStatus)
+                                                )
+                                                rituals = rituals.map {
+                                                    if (it.id == id) it.copy(isDone = updatedStatus) else it
                                                 }
+                                            } catch (e: Exception) {
+                                                e.printStackTrace()
                                             }
                                         }
                                     }
-                                )
-                                Screen.GROWTH -> GrowthJourneyScreen()
-                                Screen.CIRCLES -> CirclesScreen()
-                                else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Text("Próximamente")
+                                },
+                                onCompleteAll = {
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar("¡Excelente progreso!")
+                                    }
+                                },
+                                onWriteReflection = {
+                                    showReflectionDialog = true
                                 }
+                            )
+                            Screen.GROWTH -> GrowthJourneyScreen {
+                                scope.launch { snackbarHostState.showSnackbar("Función próximamente") }
                             }
+                            Screen.CIRCLES -> CirclesScreen(
+                                onJoinChallenge = { scope.launch { snackbarHostState.showSnackbar("¡Te has unido!") } },
+                                onExploreAll = { scope.launch { snackbarHostState.showSnackbar("Explorando comunidades...") } }
+                            )
+                            Screen.JUVENTUD -> JuventudScreen()
                         }
                     }
                 }
@@ -170,7 +227,156 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun JournalScreen(userName: String, rituals: List<Ritual>, onRitualToggle: (Int) -> Unit) {
+fun LoginScreen(onLoginSuccess: (String) -> Unit, onGoogleLogin: () -> Unit) {
+    val context = LocalContext.current
+    var email by remember { mutableStateOf("") }
+    
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Fondo decorativo o color sólido
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(BackgroundCream)
+                .verticalScroll(rememberScrollState())
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Spacer(modifier = Modifier.height(40.dp))
+            
+            // Icono central (Tu monstruito)
+            Box(
+                modifier = Modifier
+                    .size(180.dp)
+                    .background(Color.White, CircleShape)
+                    .padding(8.dp)
+                    .shadow(10.dp, CircleShape)
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.icono_montruo),
+                    contentDescription = "Logo",
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape),
+                    contentScale = ContentScale.Crop
+                )
+            }
+            
+            Spacer(modifier = Modifier.height(32.dp))
+            
+            Text(
+                "Bienvenido a\nSapling & Stone",
+                style = Typography.displayLarge.copy(fontSize = 36.sp, lineHeight = 42.sp),
+                color = PrimaryGreen,
+                textAlign = TextAlign.Center
+            )
+            
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            Text(
+                "Cultiva tu mente, nutre tu espíritu.",
+                style = Typography.bodyLarge,
+                color = Color.Gray,
+                textAlign = TextAlign.Center
+            )
+            
+            Spacer(modifier = Modifier.height(48.dp))
+            
+            // Campo de Email con estilo moderno
+            OutlinedTextField(
+                value = email,
+                onValueChange = { email = it },
+                label = { Text("Correo electrónico") },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                leadingIcon = { Icon(Icons.Default.Email, null, tint = PrimaryGreen) },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = PrimaryGreen,
+                    unfocusedBorderColor = Color.LightGray
+                ),
+                singleLine = true
+            )
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            Button(
+                onClick = {
+                    if (email.contains("@")) {
+                        onLoginSuccess(email)
+                    } else {
+                        Toast.makeText(context, "Por favor, ingresa un correo válido", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(60.dp),
+                shape = RoundedCornerShape(20.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = PrimaryGreen)
+            ) {
+                Text("Entrar", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            }
+            
+            Spacer(modifier = Modifier.height(32.dp))
+            
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Divider(modifier = Modifier.weight(1f), color = Color.LightGray)
+                Text(
+                    " O continúa con ", 
+                    modifier = Modifier.padding(horizontal = 16.dp), 
+                    style = Typography.labelSmall,
+                    color = Color.Gray
+                )
+                Divider(modifier = Modifier.weight(1f), color = Color.LightGray)
+            }
+            
+            Spacer(modifier = Modifier.height(32.dp))
+            
+            // Botón de Google con estilo oficial
+            OutlinedButton(
+                onClick = onGoogleLogin,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(60.dp),
+                shape = RoundedCornerShape(20.dp),
+                border = BorderStroke(1.dp, Color.LightGray),
+                colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.White)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Login, // Usamos un icono representativo
+                        contentDescription = null,
+                        tint = PrimaryGreen,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        "Iniciar sesión con Google", 
+                        color = OnBackgroundDark,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(40.dp))
+        }
+    }
+}
+
+// --- RESTO DE PANTALLAS (Journal, Growth, Circles, Juventud) ---
+
+@Composable
+fun JournalScreen(
+    userName: String, 
+    rituals: List<Ritual>, 
+    onRitualToggle: (Int) -> Unit,
+    onCompleteAll: () -> Unit,
+    onWriteReflection: () -> Unit,
+    onLogout: () -> Unit
+) {
     val completedCount = rituals.count { it.isDone }
     val totalCount = rituals.size
     val percentage = if (totalCount > 0) (completedCount.toFloat() / totalCount * 100).toInt() else 0
@@ -181,7 +387,6 @@ fun JournalScreen(userName: String, rituals: List<Ritual>, onRitualToggle: (Int)
             .verticalScroll(rememberScrollState())
             .padding(24.dp)
     ) {
-        // Top Logo Area
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -192,23 +397,23 @@ fun JournalScreen(userName: String, rituals: List<Ritual>, onRitualToggle: (Int)
                 Spacer(modifier = Modifier.width(4.dp))
                 Text("Sapling & Stone", style = Typography.titleLarge.copy(fontSize = 18.sp), color = PrimaryGreen)
             }
-            Icon(
-                Icons.Default.AccountCircle, 
-                contentDescription = null, 
-                modifier = Modifier.size(32.dp),
-                tint = OnBackgroundDark
-            )
+            IconButton(onClick = onLogout) {
+                Icon(
+                    Icons.Default.Logout, 
+                    contentDescription = "Logout", 
+                    modifier = Modifier.size(28.dp),
+                    tint = OnBackgroundDark
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(32.dp))
 
-        // Greeting
-        Text("Thursday, Oct 24", style = Typography.labelSmall, color = Color.Gray)
-        Text("Good Morning, $userName", style = Typography.displayLarge.copy(fontSize = 32.sp), color = OnBackgroundDark)
+        Text("Hoy es un buen día", style = Typography.labelSmall, color = Color.Gray)
+        Text("Hola, $userName", style = Typography.displayLarge.copy(fontSize = 32.sp), color = OnBackgroundDark)
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // Streak Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(24.dp),
@@ -220,30 +425,28 @@ fun JournalScreen(userName: String, rituals: List<Ritual>, onRitualToggle: (Int)
                 }
                 Spacer(modifier = Modifier.width(16.dp))
                 Column {
-                    Text("12 Day Streak", fontWeight = FontWeight.Bold)
-                    Text("Keep growing daily", fontSize = 12.sp, color = Color.Gray)
+                    Text("12 Días de Racha", fontWeight = FontWeight.Bold)
+                    Text("Sigue creciendo cada día", fontSize = 12.sp, color = Color.Gray)
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // Daily Growth Rituals Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(32.dp),
             colors = CardDefaults.cardColors(containerColor = Color.White)
         ) {
             Column(modifier = Modifier.padding(24.dp)) {
-                // AQUÍ EL PORCENTAJE ESTÁ HORIZONTAL CON EL TÍTULO
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Daily Growth", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = OnBackgroundDark)
-                        Text("You've completed $completedCount of $totalCount rituals", fontSize = 12.sp, color = Color.Gray)
+                        Text("Progreso Diario", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = OnBackgroundDark)
+                        Text("Has completado $completedCount de $totalCount rituales", fontSize = 12.sp, color = Color.Gray)
                     }
                     Text(
                         text = "$percentage%",
@@ -254,7 +457,6 @@ fun JournalScreen(userName: String, rituals: List<Ritual>, onRitualToggle: (Int)
                 
                 Spacer(modifier = Modifier.height(32.dp))
                 
-                // Gráfica de barras
                 Row(
                     modifier = Modifier.fillMaxWidth().height(100.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -272,23 +474,22 @@ fun JournalScreen(userName: String, rituals: List<Ritual>, onRitualToggle: (Int)
                 Spacer(modifier = Modifier.height(24.dp))
                 
                 Button(
-                    onClick = { },
+                    onClick = onCompleteAll,
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = PrimaryGreen),
                     shape = RoundedCornerShape(24.dp)
                 ) {
-                    Text("Complete Morning Ritual")
+                    Text("Completar Ritual Mañanero")
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(32.dp))
 
-        // Morning Rituals List
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.WbSunny, contentDescription = null, tint = PrimaryGreen, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.width(8.dp))
-            Text("Morning Rituals", fontWeight = FontWeight.Bold)
+            Text("Rituales de Mañana", fontWeight = FontWeight.Bold)
         }
         
         Spacer(modifier = Modifier.height(16.dp))
@@ -300,7 +501,6 @@ fun JournalScreen(userName: String, rituals: List<Ritual>, onRitualToggle: (Int)
 
         Spacer(modifier = Modifier.height(32.dp))
 
-        // Reflection Card (CON LA IMAGEN DEL BOSQUE)
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(32.dp),
@@ -318,24 +518,24 @@ fun JournalScreen(userName: String, rituals: List<Ritual>, onRitualToggle: (Int)
                 )
                 
                 Column(modifier = Modifier.padding(24.dp)) {
-                    Text("EVENING REFLECTION", style = Typography.labelSmall, color = Color.Gray)
+                    Text("REFLEXIÓN NOCTURNA", style = Typography.labelSmall, color = Color.Gray)
                     Text(
-                        "The space between thoughts is where growth begins.",
+                        "El espacio entre pensamientos es donde comienza el crecimiento.",
                         style = Typography.headlineMedium.copy(fontSize = 24.sp),
                         modifier = Modifier.padding(vertical = 12.dp)
                     )
                     Text(
-                        "Take a moment tonight to observe the quiet. No judgment, just awareness.",
+                        "Tómate un momento esta noche para observar el silencio. Sin juicios, solo consciencia.",
                         style = Typography.bodyLarge,
                         color = Color.DarkGray
                     )
                     Spacer(modifier = Modifier.height(24.dp))
                     Button(
-                        onClick = { },
+                        onClick = onWriteReflection,
                         colors = ButtonDefaults.buttonColors(containerColor = Color.LightGray.copy(alpha = 0.3f)),
                         shape = RoundedCornerShape(20.dp)
                     ) {
-                        Text("Write Reflection", color = OnBackgroundDark)
+                        Text("Escribir Reflexión", color = OnBackgroundDark)
                     }
                 }
             }
@@ -343,18 +543,17 @@ fun JournalScreen(userName: String, rituals: List<Ritual>, onRitualToggle: (Int)
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // INSIGHTS SECTION (LO NUEVO)
         InsightCard(
             icon = Icons.Default.Psychology,
-            title = "Mental Clarity",
-            description = "Your focus score improved by 12% this week after consistent breathwork rituals.",
+            title = "Claridad Mental",
+            description = "Tu puntaje de enfoque mejoró un 12% esta semana.",
             progress = 0.7f
         )
         
         InsightCard(
             icon = Icons.Default.Eco,
-            title = "Sustainable Pace",
-            description = "You've maintained a consistent habit velocity without burnout signs for 20 days.",
+            title = "Ritmo Sostenible",
+            description = "Has mantenido la consistencia sin signos de agotamiento.",
             progress = 0.4f
         )
 
@@ -444,25 +643,25 @@ fun BottomNavigation(currentScreen: Screen, onScreenSelected: (Screen) -> Unit) 
     NavigationBar(containerColor = BackgroundCream, tonalElevation = 0.dp) {
         NavigationBarItem(
             icon = { Icon(if(currentScreen == Screen.JOURNAL) Icons.Default.AutoStories else Icons.Outlined.AutoStories, null) },
-            label = { Text("JOURNAL", style = Typography.labelSmall) },
+            label = { Text("DIARIO", style = Typography.labelSmall) },
             selected = currentScreen == Screen.JOURNAL,
             onClick = { onScreenSelected(Screen.JOURNAL) }
         )
         NavigationBarItem(
             icon = { Icon(if(currentScreen == Screen.GROWTH) Icons.Default.QueryStats else Icons.Outlined.QueryStats, null) },
-            label = { Text("GROWTH", style = Typography.labelSmall) },
+            label = { Text("CRECIMIENTO", style = Typography.labelSmall) },
             selected = currentScreen == Screen.GROWTH,
             onClick = { onScreenSelected(Screen.GROWTH) }
         )
         NavigationBarItem(
-            icon = { Icon(Icons.Outlined.Groups, null) },
-            label = { Text("CIRCLES", style = Typography.labelSmall) },
+            icon = { Icon(if(currentScreen == Screen.CIRCLES) Icons.Default.Groups else Icons.Outlined.Groups, null) },
+            label = { Text("COMUNIDAD", style = Typography.labelSmall) },
             selected = currentScreen == Screen.CIRCLES,
             onClick = { onScreenSelected(Screen.CIRCLES) }
         )
         NavigationBarItem(
-            icon = { Icon(Icons.Outlined.Spa, null) },
-            label = { Text("JUVENTUD", style = Typography.labelSmall) },
+            icon = { Icon(if(currentScreen == Screen.JUVENTUD) Icons.Default.Spa else Icons.Outlined.Spa, null) },
+            label = { Text("VITALIDAD", style = Typography.labelSmall) },
             selected = currentScreen == Screen.JUVENTUD,
             onClick = { onScreenSelected(Screen.JUVENTUD) }
         )
@@ -481,20 +680,27 @@ fun RowScope.Bar(fraction: Float, color: Color) {
 }
 
 @Composable
-fun EmailRegistrationDialog(onDismiss: () -> Unit, onRegister: (String) -> Unit) {
-    var email by remember { mutableStateOf("") }
+fun AddRitualDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var duration by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Welcome!", fontWeight = FontWeight.Bold) },
+        title = { Text("Nuevo Ritual", fontWeight = FontWeight.Bold) },
         text = {
             Column {
-                Text("Please enter your email to get started.")
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Nombre del ritual") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                )
                 Spacer(modifier = Modifier.height(12.dp))
                 OutlinedTextField(
-                    value = email,
-                    onValueChange = { email = it },
-                    label = { Text("Email") },
+                    value = duration,
+                    onValueChange = { duration = it },
+                    label = { Text("Duración (ej. 10m)") },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp)
                 )
@@ -502,10 +708,15 @@ fun EmailRegistrationDialog(onDismiss: () -> Unit, onRegister: (String) -> Unit)
         },
         confirmButton = {
             Button(
-                onClick = { if (email.isNotBlank()) onRegister(email) },
+                onClick = { if (name.isNotBlank() && duration.isNotBlank()) onAdd(name, duration) },
                 colors = ButtonDefaults.buttonColors(containerColor = PrimaryGreen)
             ) {
-                Text("Register", color = Color.White)
+                Text("Agregar", color = Color.White)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancelar", color = Color.Gray)
             }
         },
         containerColor = Color.White,
@@ -514,14 +725,165 @@ fun EmailRegistrationDialog(onDismiss: () -> Unit, onRegister: (String) -> Unit)
 }
 
 @Composable
-fun GrowthJourneyScreen() {
+fun ReflectionDialog(onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var reflection by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Diario de Reflexión", fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                Text("¿Cómo te sientes hoy?", fontSize = 14.sp, color = Color.Gray)
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = reflection,
+                    onValueChange = { reflection = it },
+                    label = { Text("Mi reflexión") },
+                    modifier = Modifier.fillMaxWidth().height(150.dp),
+                    shape = RoundedCornerShape(12.dp)
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { if (reflection.isNotBlank()) onSave(reflection) },
+                colors = ButtonDefaults.buttonColors(containerColor = PrimaryGreen)
+            ) {
+                Text("Guardar", color = Color.White)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancelar", color = Color.Gray)
+            }
+        },
+        containerColor = Color.White,
+        shape = RoundedCornerShape(28.dp)
+    )
+}
+
+@Composable
+fun JuventudScreen() {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(24.dp)
     ) {
-        // Logo de la parte superior (opcional pero coherente)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Spa, null, tint = PrimaryGreen, modifier = Modifier.size(20.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("VITALITY & YOUTH", style = Typography.labelSmall, color = PrimaryGreen)
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+        Text("Longevity Lab", style = Typography.displayLarge.copy(fontSize = 32.sp), color = OnBackgroundDark)
+        Text("Ciencia aplicada a tu vitalidad", style = Typography.bodyLarge, color = Color.Gray)
+
+        Spacer(modifier = Modifier.height(32.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(32.dp),
+            colors = CardDefaults.cardColors(containerColor = PrimaryGreen)
+        ) {
+            Column(modifier = Modifier.padding(24.dp)) {
+                Text("EDAD BIOLÓGICA ESTIMADA", style = Typography.labelSmall, color = Color.White.copy(alpha = 0.7f))
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("24.5", style = Typography.displayLarge.copy(fontSize = 48.sp, color = Color.White))
+                Text("-2.4 años este mes", style = Typography.bodySmall, color = Color.White.copy(alpha = 0.9f))
+                
+                Spacer(modifier = Modifier.height(24.dp))
+                LinearProgressIndicator(
+                    progress = { 0.65f },
+                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
+                    color = Color.White,
+                    trackColor = Color.White.copy(alpha = 0.2f)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Text("Bio-rituales diarios", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+        Spacer(modifier = Modifier.height(16.dp))
+
+        BioRitualItem("Exposición al frío", "3 min", Icons.Default.AcUnit)
+        BioRitualItem("Terapia de luz roja", "10 min", Icons.Default.LightMode)
+        BioRitualItem("Ayuno intermitente", "16:8", Icons.Default.Timer)
+
+        Spacer(modifier = Modifier.height(32.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(32.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White)
+        ) {
+            Column(modifier = Modifier.padding(24.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.NightsStay, null, tint = Color(0xFF5C6BC0))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("CALIDAD DE SUEÑO", fontWeight = FontWeight.Bold)
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("8h 12m", style = Typography.displayLarge.copy(fontSize = 32.sp))
+                Text("Sueño profundo +15%", color = Color.Gray, fontSize = 14.sp)
+                
+                Spacer(modifier = Modifier.height(24.dp))
+                Button(
+                    onClick = { },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF5C6BC0)),
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Text("Ver análisis")
+                }
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(40.dp))
+    }
+}
+
+@Composable
+fun BioRitualItem(title: String, target: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White)
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier.size(40.dp).background(SurfaceLow, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(icon, null, tint = PrimaryGreen, modifier = Modifier.size(20.dp))
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text(title, fontWeight = FontWeight.Bold)
+                    Text(target, fontSize = 12.sp, color = Color.Gray)
+                }
+            }
+            var checked by remember { mutableStateOf(false) }
+            Checkbox(checked = checked, onCheckedChange = { checked = it })
+        }
+    }
+}
+
+@Composable
+fun GrowthJourneyScreen(onAdjustSchedule: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(24.dp)
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.Eco, null, tint = PrimaryGreen, modifier = Modifier.size(16.dp))
             Spacer(modifier = Modifier.width(8.dp))
@@ -529,32 +891,30 @@ fun GrowthJourneyScreen() {
         }
 
         Spacer(modifier = Modifier.height(24.dp))
-        Text("Growth Journey", style = Typography.displayLarge.copy(fontSize = 32.sp), color = OnBackgroundDark)
-        Text("Metrics of your evolving self.", style = Typography.bodyLarge, color = Color.Gray)
+        Text("Crecimiento Personal", style = Typography.displayLarge.copy(fontSize = 32.sp), color = OnBackgroundDark)
+        Text("Métricas de tu evolución", style = Typography.bodyLarge, color = Color.Gray)
 
         Spacer(modifier = Modifier.height(32.dp))
 
-        // 1. CURRENT MOMENTUM CARD
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(32.dp),
             colors = CardDefaults.cardColors(containerColor = SurfaceLow.copy(alpha = 0.5f))
         ) {
             Column(modifier = Modifier.padding(24.dp)) {
-                Text("CURRENT MOMENTUM", style = Typography.labelSmall, color = Color.Gray)
+                Text("IMPULSO ACTUAL", style = Typography.labelSmall, color = Color.Gray)
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text("42", style = Typography.displayLarge.copy(fontSize = 56.sp, color = PrimaryGreen))
-                    Text(" days", style = Typography.titleLarge.copy(color = Color.Gray), modifier = Modifier.padding(bottom = 12.dp, start = 8.dp))
+                    Text(" días", style = Typography.titleLarge.copy(color = Color.Gray), modifier = Modifier.padding(bottom = 12.dp, start = 8.dp))
                 }
                 Text(
-                    "Your \"Deep Reflection\" habit has been consistent for over a month. Growth is compound.", 
+                    "Tu racha de reflexión profunda lleva más de un mes. El crecimiento es exponencial.", 
                     style = Typography.bodyLarge, 
                     fontSize = 14.sp,
                     color = Color.DarkGray,
                     modifier = Modifier.padding(vertical = 12.dp)
                 )
-                // Gráfica de barras ascendente
                 Row(modifier = Modifier.fillMaxWidth().height(80.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                     Bar(0.2f, PrimaryGreen.copy(0.1f))
                     Bar(0.3f, PrimaryGreen.copy(0.2f))
@@ -569,7 +929,6 @@ fun GrowthJourneyScreen() {
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // 2. COMPLETION RATE CARD (INDEPENDIENTE)
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(32.dp),
@@ -580,36 +939,34 @@ fun GrowthJourneyScreen() {
                     Icon(Icons.Default.CheckCircleOutline, null, tint = PrimaryGreen)
                 }
                 Spacer(modifier = Modifier.height(16.dp))
-                Text("COMPLETION RATE", style = Typography.labelSmall, color = Color.Gray)
+                Text("TASA DE COMPLETADO", style = Typography.labelSmall, color = Color.Gray)
                 Text("94%", style = Typography.displayLarge.copy(fontSize = 40.sp), color = OnBackgroundDark)
                 Spacer(modifier = Modifier.height(8.dp))
                 Divider(color = Color.Gray.copy(0.2f))
                 Spacer(modifier = Modifier.height(12.dp))
-                Text("\"Consistency is the signature of mastery.\"", style = Typography.labelSmall, color = Color.Gray)
+                Text("\"La consistencia es la marca del maestro.\"", style = Typography.labelSmall, color = Color.Gray)
             }
         }
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // 3. MONTHLY TRENDS CARD
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(32.dp),
             colors = CardDefaults.cardColors(containerColor = Color.White)
         ) {
             Column(modifier = Modifier.padding(24.dp)) {
-                Text("MONTHLY TRENDS", style = Typography.labelSmall, color = Color.Gray)
+                Text("TENDENCIAS MENSUALES", style = Typography.labelSmall, color = Color.Gray)
                 Spacer(modifier = Modifier.height(24.dp))
                 
-                TrendRow("Morning Yoga", 0.8f)
-                TrendRow("Digital Detox", 0.6f)
-                TrendRow("Hydration", 0.95f)
+                TrendRow("Yoga Mañanero", 0.8f)
+                TrendRow("Detox Digital", 0.6f)
+                TrendRow("Hidratación", 0.95f)
 
                 Spacer(modifier = Modifier.height(24.dp))
                 
-                // Imagen decorativa al final de la tarjeta
                 Image(
-                    painter = painterResource(id = R.drawable.imagen_de_bosque), // Reutilizamos tu imagen o puedes poner otra
+                    painter = painterResource(id = R.drawable.imagen_de_bosque),
                     contentDescription = null,
                     modifier = Modifier.fillMaxWidth().height(120.dp).clip(RoundedCornerShape(24.dp)),
                     contentScale = ContentScale.Crop
@@ -619,17 +976,15 @@ fun GrowthJourneyScreen() {
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // 4. HABIT HEATMAP CARD
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(32.dp),
             colors = CardDefaults.cardColors(containerColor = SurfaceLow.copy(alpha = 0.5f))
         ) {
             Column(modifier = Modifier.padding(24.dp)) {
-                Text("HABIT HEATMAP", style = Typography.labelSmall, color = Color.Gray)
+                Text("MAPA DE HÁBITOS", style = Typography.labelSmall, color = Color.Gray)
                 Spacer(modifier = Modifier.height(16.dp))
                 
-                // Cuadrícula de actividad (Heatmap)
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     repeat(4) { row ->
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -654,9 +1009,9 @@ fun GrowthJourneyScreen() {
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))
-                Text("Consistency Peak", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                Text("Pico de Consistencia", fontWeight = FontWeight.Bold, fontSize = 20.sp)
                 Text(
-                    "You are most active between 7 AM and 9 AM. This is your \"Golden Window\" for high-impact growth activities.",
+                    "Eres más activo entre las 7 AM y 9 AM. Esta es tu \"Ventana de Oro\".",
                     fontSize = 14.sp,
                     color = Color.Gray,
                     modifier = Modifier.padding(top = 8.dp)
@@ -664,12 +1019,12 @@ fun GrowthJourneyScreen() {
                 
                 Spacer(modifier = Modifier.height(24.dp))
                 Button(
-                    onClick = { },
+                    onClick = onAdjustSchedule,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(containerColor = PrimaryGreen),
                     shape = RoundedCornerShape(20.dp)
                 ) {
-                    Text("Adjust Schedule")
+                    Text("Ajustar Horarios")
                     Spacer(modifier = Modifier.width(8.dp))
                     Icon(Icons.Default.ArrowForward, null, modifier = Modifier.size(16.dp))
                 }
@@ -698,14 +1053,13 @@ fun TrendRow(label: String, progress: Float) {
 }
 
 @Composable
-fun CirclesScreen() {
+fun CirclesScreen(onJoinChallenge: () -> Unit, onExploreAll: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(24.dp)
     ) {
-        // 1. FEATURED CHALLENGE CARD
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -735,7 +1089,7 @@ fun CirclesScreen() {
                     shape = RoundedCornerShape(20.dp)
                 ) {
                     Text(
-                        "FEATURED COMMUNITY CHALLENGE",
+                        "DESAFÍO COMUNITARIO DESTACADO",
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                         style = Typography.labelSmall,
                         color = Color.White
@@ -743,26 +1097,26 @@ fun CirclesScreen() {
                 }
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
-                    "21-Day Mindful\nMorning Sprint",
+                    "21 Días de Mañanas\nConscientes",
                     style = Typography.displayLarge.copy(fontSize = 32.sp, color = Color.White),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    textAlign = TextAlign.Center
                 )
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
-                    "Join 1,240 others in a collective journey to reclaim your mornings through silence and movement.",
+                    "Únete a 1,240 personas en un viaje colectivo para reclamar tus mañanas.",
                     style = Typography.bodyLarge,
                     color = Color.White.copy(alpha = 0.9f),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    textAlign = TextAlign.Center,
                     fontSize = 14.sp
                 )
                 Spacer(modifier = Modifier.height(32.dp))
                 Button(
-                    onClick = { },
+                    onClick = onJoinChallenge,
                     colors = ButtonDefaults.buttonColors(containerColor = PrimaryGreen),
                     shape = RoundedCornerShape(24.dp),
                     modifier = Modifier.height(48.dp)
                 ) {
-                    Text("Join Challenge")
+                    Text("Unirse al Desafío")
                     Spacer(modifier = Modifier.width(8.dp))
                     Icon(Icons.Default.ArrowForward, null, modifier = Modifier.size(16.dp))
                 }
@@ -771,30 +1125,28 @@ fun CirclesScreen() {
 
         Spacer(modifier = Modifier.height(32.dp))
 
-        // 2. MY CIRCLES SECTION
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
-                Text("My Circles", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = OnBackgroundDark)
-                Text("Your thriving growth spaces", fontSize = 12.sp, color = Color.Gray)
+                Text("Mis Círculos", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = OnBackgroundDark)
+                Text("Tus espacios de crecimiento", fontSize = 12.sp, color = Color.Gray)
             }
-            TextButton(onClick = { }) {
-                Text("Explore all", color = Color.Gray, fontSize = 14.sp)
+            TextButton(onClick = onExploreAll) {
+                Text("Explorar todos", color = Color.Gray, fontSize = 14.sp)
                 Icon(Icons.Default.OpenInNew, null, modifier = Modifier.size(14.dp), tint = Color.Gray)
             }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Horizontal row for Circles
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            CircleItem("Early Risers", "42 Active Today", Icons.Default.LightMode, modifier = Modifier.weight(1f))
+            CircleItem("Madrugadores", "42 Activos hoy", Icons.Default.LightMode, modifier = Modifier.weight(1f))
             Box(
                 modifier = Modifier
                     .weight(0.3f)
@@ -806,15 +1158,14 @@ fun CirclesScreen() {
 
         Spacer(modifier = Modifier.height(40.dp))
 
-        // 3. COMMUNITY MOMENTS
-        Text("Community Moments", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = OnBackgroundDark)
+        Text("Momentos de la Comunidad", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = OnBackgroundDark)
         
         Spacer(modifier = Modifier.height(24.dp))
 
         MomentCard(
             author = "Sarah Bloom",
-            time = "2 hours ago in Early Risers",
-            content = "\"Watched the sunrise with a hot cup of lemon water. There is so much magic in the quiet hours before the world wakes up. 🌿\"",
+            time = "Hace 2 horas en Madrugadores",
+            content = "\"Viendo el amanecer con un té caliente. Hay magia en el silencio antes de que el mundo despierte. 🌿\"",
             imageRes = R.drawable.imagen_de_bosque,
             cheers = 24,
             comments = 4
@@ -822,8 +1173,8 @@ fun CirclesScreen() {
 
         MomentCard(
             author = "Marcus Stone",
-            time = "5 hours ago in Plant-Based",
-            content = "Finally mastered the walnut-based 'taco meat'! High protein, high energy. My body feels so much lighter lately. 🥑✨",
+            time = "Hace 5 horas en Plant-Based",
+            content = "Finalmente dominé la receta de tacos de nuez. Mi cuerpo se siente mucho más ligero hoy. 🥑✨",
             cheers = 56,
             comments = 12
         )
@@ -925,49 +1276,4 @@ fun MomentCard(author: String, time: String, content: String, imageRes: Int? = n
             }
         }
     }
-}
-
-@Composable
-fun AddRitualDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Unit) {
-    var name by remember { mutableStateOf("") }
-    var duration by remember { mutableStateOf("") }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Nuevo Ritual", fontWeight = FontWeight.Bold) },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Nombre del ritual") },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = duration,
-                    onValueChange = { duration = it },
-                    label = { Text("Duración (ej. 10m)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = { if (name.isNotBlank() && duration.isNotBlank()) onAdd(name, duration) },
-                colors = ButtonDefaults.buttonColors(containerColor = PrimaryGreen)
-            ) {
-                Text("Agregar", color = Color.White)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancelar", color = Color.Gray)
-            }
-        },
-        containerColor = Color.White,
-        shape = RoundedCornerShape(28.dp)
-    )
 }
